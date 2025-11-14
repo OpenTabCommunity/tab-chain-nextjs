@@ -8,7 +8,7 @@ const _geist = Geist({ subsets: ["latin"] })
 const _geistMono = Geist_Mono({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
-  title: "What Beats Rock? - The Ultimate Creative Game",
+  title: "TabChain? - The Ultimate Creative Game",
   description:
     "Get creative and vote on the best answers! What could possibly beat rock? Join the fun and see what the community comes up with.",
   generator: "v0.app",
