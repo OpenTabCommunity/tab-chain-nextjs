@@ -1,13 +1,19 @@
 "use client"
 
-import type React from "react"
-import { useEffect, useState } from "react"
-import { useRouter } from 'next/navigation'
+import React, { useEffect, useState } from "react"
+import { useRouter } from "next/navigation"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { AlertCircle } from 'lucide-react'
+import { AlertCircle } from "lucide-react"
 import { ParticleBackground } from "@/components/particle-background"
+
+type BackendResponse = {
+  accepted: boolean
+  score: number
+  quote: string
+  session_id?: string | null
+}
 
 export default function Home() {
   const router = useRouter()
@@ -17,15 +23,39 @@ export default function Home() {
   const [hasSubmitted, setHasSubmitted] = useState(false)
   const [currentQuote, setCurrentQuote] = useState<string>("")
   const [duplicateError, setDuplicateError] = useState(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+
+  // API base — change to your server IP or set NEXT_PUBLIC_API_BASE in .env
+  const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "https://server_ip"
+  const PLAY_ENDPOINT = `${API_BASE}/api/play/`
 
   useEffect(() => {
     const user = localStorage.getItem("currentUser")
     if (!user) {
       router.push("/auth")
     } else {
-      setCurrentUser(JSON.parse(user))
+      try {
+        setCurrentUser(JSON.parse(user))
+      } catch {
+        localStorage.removeItem("currentUser")
+        router.push("/auth")
+      }
     }
   }, [router])
+
+  const getSessionIdFromCache = () => {
+    const sid = localStorage.getItem("play_session_id")
+    return sid ? sid : null
+  }
+
+  const setSessionIdToCache = (id: string | null) => {
+    if (id === null || id === undefined) {
+      localStorage.removeItem("play_session_id")
+    } else {
+      localStorage.setItem("play_session_id", id)
+    }
+  }
 
   const currentQuestion = chain[chain.length - 1]
   const chainLength = chain.length - 1
@@ -39,75 +69,96 @@ export default function Home() {
     setDuplicateError(isDuplicate && value.trim() !== "")
   }
 
+  const extractToken = (userObj: any) => {
+    if (!userObj) return null
+    return userObj.token || userObj.accessToken || userObj.authToken || null
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    setErrorMsg(null)
 
     if (duplicateError || !userAnswer.trim()) {
       return
     }
 
-    const lowercaseAnswer = userAnswer.trim().toLowerCase()
     const normalizedAnswer = userAnswer.trim()
+    const token = extractToken(currentUser)
 
-    const mockBackendResponse = simulateBackendResponse(lowercaseAnswer, chainLength)
-
-    if (!mockBackendResponse.accepted) {
-      router.push(
-        `/game-over?score=${mockBackendResponse.score}&quote=${encodeURIComponent(mockBackendResponse.quote)}`,
-      )
+    if (!token) {
+      localStorage.removeItem("currentUser")
+      router.push("/auth")
       return
     }
 
-    setCurrentQuote(mockBackendResponse.quote)
+    const sessionId = getSessionIdFromCache() // may be null
 
-    setChain([...chain, normalizedAnswer])
-    setUserAnswer("")
-    setDuplicateError(false)
-    setHasSubmitted(true)
-
-    setTimeout(() => setHasSubmitted(false), 2000)
-  }
-
-  const simulateBackendResponse = (answer: string, currentScore: number) => {
-    const invalidAnswers = ["rock", "nothing", "null", "undefined", ""]
-    const isInvalid = invalidAnswers.includes(answer.toLowerCase())
-
-    const randomReject = Math.random() < 0.1
-
-    const funnyQuotes = [
-      "Even a pebble dreams of being a boulder!",
-      "Nice try, but the universe has other plans!",
-      "Creativity +100! Logic... well, let's not talk about that.",
-      "That's one way to think outside the box!",
-      "The judges are impressed... but not convinced!",
-      "Bold move! Unfortunately, physics disagrees.",
-      "Your imagination is limitless, but this answer isn't!",
-      "So close, yet so far from making sense!",
-    ]
-
-    const successQuotes = [
-      "Brilliant! The chain grows stronger!",
-      "Now that's what I call creative thinking!",
-      "Absolutely genius! Keep it going!",
-      "Mind. Blown. What a clever answer!",
-      "The creativity is off the charts!",
-      "That's the spirit! Unstoppable!",
-      "Wow! Didn't see that coming!",
-      "Pure gold! The chain lives on!",
-    ]
-
-    if (isInvalid || randomReject) {
-      return {
-        accepted: false,
-        score: currentScore,
-        quote: funnyQuotes[Math.floor(Math.random() * funnyQuotes.length)],
-      }
+    const payload = {
+      move: normalizedAnswer,
+      chain: chain,
+      session_id: sessionId,
     }
 
-    return {
-      accepted: true,
-      score: currentScore + 1,
-      quote: successQuotes[Math.floor(Math.random() * successQuotes.length)],
+    setIsSubmitting(true)
+
+    // AbortController for timeout
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 10000) // 10s timeout
+
+    try {
+      const res = await fetch(PLAY_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      })
+
+      clearTimeout(timeoutId)
+
+      if (res.status === 401) {
+        localStorage.removeItem("currentUser")
+        setIsSubmitting(false)
+        router.push("/auth")
+        return
+      }
+
+      if (!res.ok) {
+        const text = await res.text()
+        console.error("Non-OK response from /api/play/:", res.status, text)
+        setErrorMsg("Server error. Please try again.")
+        setIsSubmitting(false)
+        return
+      }
+
+      const data: BackendResponse = await res.json()
+
+      if (typeof data.session_id !== "undefined") {
+        setSessionIdToCache(data.session_id)
+      }
+
+      if (!data.accepted) {
+        router.push(`/game-over?score=${data.score}&quote=${encodeURIComponent(data.quote)}`)
+        return
+      }
+
+      setCurrentQuote(data.quote)
+      setChain(prev => [...prev, normalizedAnswer])
+      setUserAnswer("")
+      setDuplicateError(false)
+      setHasSubmitted(true)
+      setTimeout(() => setHasSubmitted(false), 2000)
+    } catch (err: any) {
+      // FAIL HARD: do not attempt fallback. show error and stop progression.
+      console.error("Network / fetch error:", err)
+      setErrorMsg("Network error — request failed. Check your connection and try again.")
+      setIsSubmitting(false)
+    } finally {
+      try {
+        clearTimeout(timeoutId)
+      } catch {}
     }
   }
 
@@ -165,10 +216,10 @@ export default function Home() {
               <Button
                 type="submit"
                 size="lg"
-                disabled={duplicateError || !userAnswer.trim()}
+                disabled={duplicateError || !userAnswer.trim() || isSubmitting}
                 className="w-full h-14 md:h-16 text-xl md:text-2xl font-bold rounded-2xl bg-gradient-to-r from-pink-500 via-purple-500 to-cyan-500 hover:from-pink-600 hover:via-purple-600 hover:to-cyan-600 text-white shadow-lg hover:shadow-pink-500/50 transition-all duration-300 neon-button disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-none disabled:hover:from-pink-500 disabled:hover:via-purple-500 disabled:hover:to-cyan-500"
               >
-                Submit Answer
+                {isSubmitting ? "Submitting..." : "Submit Answer"}
               </Button>
             </form>
 
@@ -177,6 +228,8 @@ export default function Home() {
                 Answer submitted! Chain continues...
               </div>
             )}
+
+            {errorMsg && <div className="text-center text-yellow-300 font-semibold">{errorMsg}</div>}
           </div>
 
           {chain.length > 1 && (
@@ -199,3 +252,4 @@ export default function Home() {
     </div>
   )
 }
+
