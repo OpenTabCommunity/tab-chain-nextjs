@@ -1,8 +1,6 @@
 "use client"
 
-import type React from "react"
-
-import { useState } from "react"
+import React, { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -10,39 +8,124 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ParticleBackground } from "@/components/particle-background"
 
+type AuthResponse = {
+  accessToken: string
+  refreshToken?: string
+  expires?: string | number
+  [key: string]: any
+}
+
 export default function AuthPage() {
-  const [isLogin, setIsLogin] = useState(true)
+  const [isLogin] = useState(true) // kept for UI parity - currently Sign Up flow
   const [phone, setPhone] = useState("")
-  const [password, setPassword] = useState("")
   const [error, setError] = useState("")
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const router = useRouter()
 
-  const handleSubmit = (e: React.FormEvent) => {
+  // configure your backend base here (or via NEXT_PUBLIC_API_BASE env var)
+  const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "https://server_ip"
+  // Change this path if your backend exposes a different login/signup route
+  const AUTH_ENDPOINT = `${API_BASE}/api/auth/`
+
+  useEffect(() => {
+    // If already logged in, redirect to app
+    const user = localStorage.getItem("currentUser")
+    if (user) {
+      router.push("/")
+    }
+  }, [router])
+
+  const validatePhone = (p: string) => {
+    // basic international-ish phone validation:
+    // starts with + or digit, contains only digits, spaces or dashes, min length 6
+    const phoneRegex = /^[+]?[\d\s-]{6,}$/
+    return phoneRegex.test(p.trim())
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError("")
 
-
-    const phoneRegex = /^[\d\s\-+$$$$]+$/
-    if (!phoneRegex.test(phone)) {
+    if (!validatePhone(phone)) {
       setError("Please enter a valid phone number")
       return
     }
 
+    const payload = { phone_number: phone.trim() }
 
-      const users = JSON.parse(localStorage.getItem("users") || "[]")
-      const userExists = users.some((u: any) => u.phone === phone)
+    setIsSubmitting(true)
 
-      if (userExists) {
-        setError("User already exists")
+    // timeout with AbortController
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 10000) // 10s
+
+    try {
+      const res = await fetch(AUTH_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      })
+
+      clearTimeout(timeout)
+
+      if (res.status === 401) {
+        setError("Unauthorized. Please check the phone number or contact support.")
+        setIsSubmitting(false)
         return
       }
 
-      const newUser = { phone, password, createdAt: new Date().toISOString() }
-      users.push(newUser)
-      localStorage.setItem("users", JSON.stringify(users))
-      localStorage.setItem("currentUser", JSON.stringify(newUser))
+      if (!res.ok) {
+        const text = await res.text().catch(() => "")
+        console.error("Auth request failed:", res.status, text)
+        setError("Server error during authentication. Try again later.")
+        setIsSubmitting(false)
+        return
+      }
+
+      const data: AuthResponse = await res.json()
+
+      if (!data || !data.accessToken) {
+        console.error("Unexpected auth response:", data)
+        setError("Invalid response from server.")
+        setIsSubmitting(false)
+        return
+      }
+
+      // store a useful currentUser object for app usage
+      const now = new Date().toISOString()
+      const currentUser = {
+        phone: phone.trim(),
+        accessToken: data.accessToken,
+        refreshToken: data.refreshToken ?? null,
+        expires: data.expires ?? null,
+        token: data.accessToken, // alias for compatibility with components expecting `token`
+        createdAt: now,
+        raw: data, // keep raw response if you want
+      }
+
+      localStorage.setItem("currentUser", JSON.stringify(currentUser))
+
+      // optionally clear any previously cached session_id for a fresh start:
+      // localStorage.removeItem("play_session_id")
+
       router.push("/")
-    
+    } catch (err: any) {
+      // FAIL HARD: no offline fallback
+      console.error("Network / fetch error (auth):", err)
+      if (err.name === "AbortError") {
+        setError("Request timed out. Check your network and try again.")
+      } else {
+        setError("Network error — request failed. Check your connection and try again.")
+      }
+      setIsSubmitting(false)
+    } finally {
+      try {
+        clearTimeout(timeout)
+      } catch {}
+    }
   }
 
   return (
@@ -56,7 +139,6 @@ export default function AuthPage() {
         </div>
 
         <Card className="p-8 bg-gradient-to-br from-purple-900/40 via-pink-900/40 to-cyan-900/40 border-2 border-purple-500/30 rounded-3xl backdrop-blur-sm glow-card">
-
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="space-y-2">
               <Label htmlFor="phone" className="text-cyan-300 font-bold">
@@ -80,9 +162,10 @@ export default function AuthPage() {
 
             <Button
               type="submit"
-              className="w-full h-14 text-xl font-bold rounded-xl bg-gradient-to-r from-pink-500 via-purple-500 to-cyan-500 hover:from-pink-600 hover:via-purple-600 hover:to-cyan-600 text-white shadow-lg transition-all duration-300 neon-button"
+              disabled={isSubmitting}
+              className="w-full h-14 text-xl font-bold rounded-xl bg-gradient-to-r from-pink-500 via-purple-500 to-cyan-500 hover:from-pink-600 hover:via-purple-600 hover:to-cyan-600 text-white shadow-lg transition-all duration-300 neon-button disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {isLogin ? "Sign Up" : "Sign Up"}
+              {isSubmitting ? "Submitting..." : isLogin ? "Sign Up" : "Sign Up"}
             </Button>
           </form>
         </Card>
@@ -90,3 +173,4 @@ export default function AuthPage() {
     </div>
   )
 }
+
