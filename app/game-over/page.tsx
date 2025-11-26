@@ -7,10 +7,11 @@ import { Button } from "@/components/ui/button"
 import { ParticleBackground } from "@/components/particle-background"
 import { Trophy, RotateCcw, Home } from "lucide-react"
 
-type EndSessionResponse = {
-  final_score: number
+type SessionData = {
+  score: number
+  session_id: string | null
+  chain: string[]
   best_score: number
-  [key: string]: any
 }
 
 export default function GameOver() {
@@ -25,39 +26,25 @@ export default function GameOver() {
   const [displayScore, setDisplayScore] = useState(0)
   const [finalScore, setFinalScore] = useState<number>(initialFinalFromQuery)
   const [quote, setQuote] = useState<string>(initialQuote)
-  const [bestScore, setBestScore] = useState<number>(
-    Number.parseInt(localStorage.getItem("bestScore") || "0"),
-  )
+  const [bestScore, setBestScore] = useState<number>(0)
   const [showConfetti, setShowConfetti] = useState(false)
-  const [isEnding, setIsEnding] = useState(false)
+  const [isLoading, setIsLoading] = useState(true)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
   // API base — change or set NEXT_PUBLIC_API_BASE
-  const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "https://server_ip"
+  const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://91.206.178.230:8000"
 
   useEffect(() => {
     // animate confetti briefly
     setShowConfetti(true)
     const confettiTimer = setTimeout(() => setShowConfetti(false), 3000)
 
-    // Try to end session on mount if we have a cached session id
-    ;(async function endSessionIfNeeded() {
-      const sessionId = localStorage.getItem("play_session_id")
-      if (!sessionId) {
-        // no cached session -> use query param final score and exit
-        startCountUp(finalScore)
-        // update best score from localStorage (already in state)
-        if (finalScore > bestScore) {
-          localStorage.setItem("bestScore", finalScore.toString())
-          setBestScore(finalScore)
-        }
-        return
-      }
-
-      setIsEnding(true)
+    // Fetch current session data on mount
+    ;(async function fetchSessionData() {
+      setIsLoading(true)
       setErrorMsg(null)
 
-      // try to extract token if present (best-effort)
+      // try to extract token
       let token: string | null = null
       try {
         const raw = localStorage.getItem("currentUser")
@@ -69,7 +56,16 @@ export default function GameOver() {
         token = null
       }
 
-      const END_ENDPOINT = `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/end`
+      if (!token) {
+        // No token, use query params and fallback
+        setFinalScore(initialFinalFromQuery)
+        setBestScore(Number.parseInt(localStorage.getItem("bestScore") || "0"))
+        startCountUp(initialFinalFromQuery)
+        setIsLoading(false)
+        return
+      }
+
+      const SESSION_ENDPOINT = `${API_BASE}/api/session/current/`
 
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 10000) // 10s
@@ -77,11 +73,11 @@ export default function GameOver() {
       try {
         const headers: Record<string, string> = {
           "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
         }
-        if (token) headers.Authorization = `Bearer ${token}`
 
-        const res = await fetch(END_ENDPOINT, {
-          method: "POST",
+        const res = await fetch(SESSION_ENDPOINT, {
+          method: "GET",
           headers,
           signal: controller.signal,
         })
@@ -89,71 +85,63 @@ export default function GameOver() {
         clearTimeout(timeout)
 
         if (res.status === 401) {
-          // unauthorized: force re-login (optional) and surface an error
+          // unauthorized: force re-login
           localStorage.removeItem("currentUser")
-          setErrorMsg("Session end unauthorized. Please login again.")
-          setIsEnding(false)
+          setErrorMsg("Session unauthorized. Please login again.")
+          setIsLoading(false)
           router.push("/auth")
           return
         }
 
         if (!res.ok) {
           const text = await res.text().catch(() => "")
-          console.error("Failed to end session:", res.status, text)
-          setErrorMsg("Server error while closing session. Try again later.")
-          setIsEnding(false)
+          console.error("Failed to fetch session:", res.status, text)
+          setErrorMsg("Server error while fetching session data.")
           // fall back to query param values
-          startCountUp(finalScore)
+          setFinalScore(initialFinalFromQuery)
+          setBestScore(Number.parseInt(localStorage.getItem("bestScore") || "0"))
+          startCountUp(initialFinalFromQuery)
+          setIsLoading(false)
           return
         }
 
-        const data: EndSessionResponse = await res.json()
+        const data: SessionData = await res.json()
 
-        // Expecting final_score and best_score in response
-        const serverFinal = Number(data.final_score ?? initialFinalFromQuery)
-        const serverBest = Number(data.best_score ?? localStorage.getItem("bestScore") ?? 0)
+        // The session was already ended by the backend, so we use the score from query params
+        // but we get the best_score from the API response
+        const serverFinal = initialFinalFromQuery // Use score from query params (already calculated by backend)
+        const serverBest = Number(data.best_score ?? 0)
 
         // update UI and storage
         setFinalScore(serverFinal)
         setBestScore(serverBest)
         localStorage.setItem("bestScore", String(serverBest))
 
-        // remove cached session id (close session on client)
-        localStorage.removeItem("play_session_id")
-
         // animate count-up using serverFinal
         startCountUp(serverFinal)
+        
       } catch (err: any) {
-        console.error("Network / fetch error (end session):", err)
+        console.error("Network / fetch error (fetch session):", err)
         if (err.name === "AbortError") {
-          setErrorMsg("Request to close session timed out.")
+          setErrorMsg("Request to fetch session timed out.")
         } else {
-          setErrorMsg("Network error while closing session.")
+          setErrorMsg("Network error while fetching session.")
         }
-        // Do not remove session_id on failure — user can retry later if you implement retry logic
-        startCountUp(finalScore) // fallback to query param
+        // fallback to query param
+        setFinalScore(initialFinalFromQuery)
+        setBestScore(Number.parseInt(localStorage.getItem("bestScore") || "0"))
+        startCountUp(initialFinalFromQuery)
       } finally {
         try {
           clearTimeout(timeout)
         } catch {}
-        setIsEnding(false)
+        setIsLoading(false)
       }
     })()
 
     return () => clearTimeout(confettiTimer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []) // run once on mount
-
-  // when finalScore changes we want to animate the count-up; startCountUp also used inside effect
-  useEffect(() => {
-    // If finalScore was set earlier (before endSession), animate once.
-    // If endSession sets finalScore and called startCountUp already, this effect won't double-run because startCountUp sets displayScore directly.
-    // But keep this as safety — animate if displayScore is still 0.
-    if (displayScore === 0 && finalScore > 0 && !isEnding) {
-      startCountUp(finalScore)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [finalScore])
 
   const startCountUp = (target: number) => {
     let current = 0
@@ -225,23 +213,23 @@ export default function GameOver() {
             <div className="mb-6">
               <div className="text-lg md:text-xl text-cyan-300 font-bold mb-2">Final Score</div>
               <div className="text-7xl md:text-9xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 via-pink-500 to-cyan-400 animate-pulse-glow">
-                {displayScore}
+                {isLoading ? "..." : displayScore}
               </div>
             </div>
 
-            {finalScore > bestScore && (
+            {!isLoading && finalScore > bestScore && (
               <div className="flex items-center justify-center gap-2 text-yellow-400 font-bold text-xl mb-4 animate-bounce">
                 <Trophy className="w-6 h-6" />
                 New Best Score!
               </div>
             )}
 
-            {bestScore > 0 && finalScore !== bestScore && (
+            {!isLoading && bestScore > 0 && finalScore !== bestScore && (
               <div className="text-cyan-300 font-bold text-lg">Best Score: {bestScore}</div>
             )}
           </Card>
 
-          {/* Error message about ending session (if any) */}
+          {/* Error message about fetching session (if any) */}
           {errorMsg && (
             <div className="mb-6 p-3 bg-red-600/10 border-2 border-red-600 rounded-xl text-red-300 text-center font-bold">
               {errorMsg}
@@ -253,8 +241,8 @@ export default function GameOver() {
             <Button
               onClick={handlePlayAgain}
               size="lg"
-              disabled={isEnding}
-              className="h-16 px-8 text-xl font-bold rounded-2xl bg-gradient-to-r from-pink-500 via-purple-500 to-cyan-500 hover:from-pink-600 hover:via-purple-600 hover:to-cyan-600 text-white shadow-lg hover:shadow-pink-500/50 transition-all duration-300 hover:scale-105 neon-button"
+              disabled={isLoading}
+              className="h-16 px-8 text-xl font-bold rounded-2xl bg-gradient-to-r from-pink-500 via-purple-500 to-cyan-500 hover:from-pink-600 hover:via-purple-600 hover:to-cyan-600 text-white shadow-lg hover:shadow-pink-500/50 transition-all duration-300 hover:scale-105 neon-button disabled:opacity-50"
             >
               <RotateCcw className="w-6 h-6 mr-2" />
               Play Again
@@ -278,4 +266,3 @@ export default function GameOver() {
     </div>
   )
 }
-

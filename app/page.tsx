@@ -15,6 +15,13 @@ type BackendResponse = {
   session_id?: string | null
 }
 
+type SessionData = {
+  score: number
+  session_id: string | null
+  chain: string[]
+  best_score: number
+}
+
 export default function Home() {
   const router = useRouter()
   const [currentUser, setCurrentUser] = useState<any>(null)
@@ -25,10 +32,12 @@ export default function Home() {
   const [duplicateError, setDuplicateError] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [sessionId, setSessionId] = useState<string | null>(null)
 
   // API base — change to your server IP or set NEXT_PUBLIC_API_BASE in .env
-  const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "https://server_ip"
-  const PLAY_ENDPOINT = `${API_BASE}/api/play/`
+  const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://91.206.178.230:8000/"
+  const PLAY_ENDPOINT = `${API_BASE}/api/play`
+  const SESSION_ENDPOINT = `${API_BASE}/api/session/current/`
 
   useEffect(() => {
     const user = localStorage.getItem("currentUser")
@@ -36,7 +45,10 @@ export default function Home() {
       router.push("/auth")
     } else {
       try {
-        setCurrentUser(JSON.parse(user))
+        const parsedUser = JSON.parse(user)
+        setCurrentUser(parsedUser)
+        // Fetch session data on mount
+        fetchSessionData(parsedUser)
       } catch {
         localStorage.removeItem("currentUser")
         router.push("/auth")
@@ -44,16 +56,45 @@ export default function Home() {
     }
   }, [router])
 
-  const getSessionIdFromCache = () => {
-    const sid = localStorage.getItem("play_session_id")
-    return sid ? sid : null
+  const extractToken = (userObj: any) => {
+    if (!userObj) return null
+    return userObj.token || userObj.accessToken || userObj.authToken || null
   }
 
-  const setSessionIdToCache = (id: string | null) => {
-    if (id === null || id === undefined) {
-      localStorage.removeItem("play_session_id")
-    } else {
-      localStorage.setItem("play_session_id", id)
+  const fetchSessionData = async (user: any) => {
+    const token = extractToken(user)
+    if (!token) {
+      router.push("/auth")
+      return
+    }
+
+    try {
+      const res = await fetch(SESSION_ENDPOINT, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      })
+
+      if (res.status === 401) {
+        localStorage.removeItem("currentUser")
+        router.push("/auth")
+        return
+      }
+
+      if (res.ok) {
+        const data: SessionData = await res.json()
+        setSessionId(data.session_id)
+        
+        // If there's an existing chain, use it
+        if (data.chain && data.chain.length > 0) {
+          setChain(data.chain)
+        }
+      }
+    } catch (err) {
+      console.error("Failed to fetch session data:", err)
+      // Continue with default values if session fetch fails
     }
   }
 
@@ -69,16 +110,11 @@ export default function Home() {
     setDuplicateError(isDuplicate && value.trim() !== "")
   }
 
-  const extractToken = (userObj: any) => {
-    if (!userObj) return null
-    return userObj.token || userObj.accessToken || userObj.authToken || null
-  }
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setErrorMsg(null)
 
-    if (duplicateError || !userAnswer.trim()) {
+    if (duplicateError || !userAnswer.trim() || isSubmitting) {
       return
     }
 
@@ -91,8 +127,6 @@ export default function Home() {
       return
     }
 
-    const sessionId = getSessionIdFromCache() // may be null
-
     const payload = {
       move: normalizedAnswer,
       chain: chain,
@@ -103,7 +137,7 @@ export default function Home() {
 
     // AbortController for timeout
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 10000) // 10s timeout
+    const timeoutId = setTimeout(() => controller.abort(), 100000) // 10s timeout
 
     try {
       const res = await fetch(PLAY_ENDPOINT, {
@@ -120,7 +154,6 @@ export default function Home() {
 
       if (res.status === 401) {
         localStorage.removeItem("currentUser")
-        setIsSubmitting(false)
         router.push("/auth")
         return
       }
@@ -129,14 +162,14 @@ export default function Home() {
         const text = await res.text()
         console.error("Non-OK response from /api/play/:", res.status, text)
         setErrorMsg("Server error. Please try again.")
-        setIsSubmitting(false)
         return
       }
 
       const data: BackendResponse = await res.json()
 
-      if (typeof data.session_id !== "undefined") {
-        setSessionIdToCache(data.session_id)
+      // Update session_id from response
+      if (typeof data.session_id !== "undefined" && data.session_id !== null) {
+        setSessionId(data.session_id)
       }
 
       if (!data.accepted) {
@@ -150,15 +183,17 @@ export default function Home() {
       setDuplicateError(false)
       setHasSubmitted(true)
       setTimeout(() => setHasSubmitted(false), 2000)
+      
     } catch (err: any) {
-      // FAIL HARD: do not attempt fallback. show error and stop progression.
       console.error("Network / fetch error:", err)
-      setErrorMsg("Network error — request failed. Check your connection and try again.")
-      setIsSubmitting(false)
+      if (err.name === 'AbortError') {
+        setErrorMsg("Request timed out. Please try again.")
+      } else {
+        setErrorMsg("Network error — request failed. Check your connection and try again.")
+      }
     } finally {
-      try {
-        clearTimeout(timeoutId)
-      } catch {}
+      setIsSubmitting(false)
+      clearTimeout(timeoutId)
     }
   }
 
@@ -197,14 +232,20 @@ export default function Home() {
           )}
 
           <div className="w-full space-y-4">
-            <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="space-y-4">
               <div className="relative">
                 <Input
                   type="text"
                   placeholder="Type your answer..."
                   value={userAnswer}
                   onChange={handleInputChange}
-                  className="h-16 md:h-20 text-lg md:text-xl bg-black/60 border-2 border-cyan-500/50 text-white placeholder:text-cyan-300/40 rounded-2xl px-6 focus:border-pink-500 focus:ring-pink-500 transition-all duration-300 glow-input"
+                  onKeyPress={(e) => {
+                    if (e.key === 'Enter') {
+                      handleSubmit(e)
+                    }
+                  }}
+                  disabled={isSubmitting}
+                  className="h-16 md:h-20 text-lg md:text-xl bg-black/60 border-2 border-cyan-500/50 text-white placeholder:text-cyan-300/40 rounded-2xl px-6 focus:border-pink-500 focus:ring-pink-500 transition-all duration-300 glow-input disabled:opacity-50"
                 />
                 {duplicateError && (
                   <div className="mt-2 flex items-center gap-2 text-red-400 font-bold animate-shake">
@@ -214,14 +255,14 @@ export default function Home() {
                 )}
               </div>
               <Button
-                type="submit"
+                onClick={handleSubmit}
                 size="lg"
                 disabled={duplicateError || !userAnswer.trim() || isSubmitting}
                 className="w-full h-14 md:h-16 text-xl md:text-2xl font-bold rounded-2xl bg-gradient-to-r from-pink-500 via-purple-500 to-cyan-500 hover:from-pink-600 hover:via-purple-600 hover:to-cyan-600 text-white shadow-lg hover:shadow-pink-500/50 transition-all duration-300 neon-button disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-none disabled:hover:from-pink-500 disabled:hover:via-purple-500 disabled:hover:to-cyan-500"
               >
                 {isSubmitting ? "Submitting..." : "Submit Answer"}
               </Button>
-            </form>
+            </div>
 
             {hasSubmitted && (
               <div className="text-center text-green-400 font-bold text-lg animate-bounce glow-subtle">
@@ -252,4 +293,3 @@ export default function Home() {
     </div>
   )
 }
-

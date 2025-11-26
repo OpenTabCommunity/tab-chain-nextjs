@@ -9,10 +9,9 @@ import { Label } from "@/components/ui/label"
 import { ParticleBackground } from "@/components/particle-background"
 
 type AuthResponse = {
-  accessToken: string
-  refreshToken?: string
-  expires?: string | number
-  [key: string]: any
+  access_token: string
+  refresh_token: string
+  expires_in: number
 }
 
 export default function AuthPage() {
@@ -23,9 +22,9 @@ export default function AuthPage() {
   const router = useRouter()
 
   // configure your backend base here (or via NEXT_PUBLIC_API_BASE env var)
-  const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "https://server_ip"
+  const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://91.206.178.230:8000"
   // Change this path if your backend exposes a different login/signup route
-  const AUTH_ENDPOINT = `${API_BASE}/api/auth/`
+  const AUTH_ENDPOINT = `${API_BASE}/api/auth/login`
 
   useEffect(() => {
     // If already logged in, redirect to app
@@ -51,7 +50,7 @@ export default function AuthPage() {
       return
     }
 
-    const payload = { phone_number: phone.trim() }
+    const payload = { username : phone.trim() }
 
     setIsSubmitting(true)
 
@@ -87,21 +86,13 @@ export default function AuthPage() {
 
       const data: AuthResponse = await res.json()
 
-      if (!data || !data.accessToken) {
-        console.error("Unexpected auth response:", data)
-        setError("Invalid response from server.")
-        setIsSubmitting(false)
-        return
-      }
-
-      // store a useful currentUser object for app usage
       const now = new Date().toISOString()
       const currentUser = {
         phone: phone.trim(),
-        accessToken: data.accessToken,
-        refreshToken: data.refreshToken ?? null,
-        expires: data.expires ?? null,
-        token: data.accessToken, // alias for compatibility with components expecting `token`
+        access_token: data.access_token,
+        refresh_token: data.refresh_token ?? null,
+        expires_in: data.expires_in ?? null,
+        token: data.access_token, // alias for compatibility with components expecting `token`
         createdAt: now,
         raw: data, // keep raw response if you want
       }
@@ -165,7 +156,7 @@ export default function AuthPage() {
               disabled={isSubmitting}
               className="w-full h-14 text-xl font-bold rounded-xl bg-gradient-to-r from-pink-500 via-purple-500 to-cyan-500 hover:from-pink-600 hover:via-purple-600 hover:to-cyan-600 text-white shadow-lg transition-all duration-300 neon-button disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {isSubmitting ? "Submitting..." : isLogin ? "Sign Up" : "Sign Up"}
+              {isSubmitting ? "Submitting..." : isLogin ? "Login" : "Login"}
             </Button>
           </form>
         </Card>
